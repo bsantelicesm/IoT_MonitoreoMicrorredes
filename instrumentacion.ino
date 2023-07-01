@@ -1,3 +1,12 @@
+#define ADC_CT 32; //pin del transformador de corriente
+#define ADC_VT 33; //pin del transformador de voltaje
+
+#define TH1 12; //pin del RTD 1
+#define TH2 13; //pin del RTD 2
+#define TH3 14; //pin del RTD 3
+
+#define RELAY 4; //pin del relé
+
 //---VARIABLES---
 long time = 0; //tiempo de loop, para sincronizar lecturas una vez por minuto.
 
