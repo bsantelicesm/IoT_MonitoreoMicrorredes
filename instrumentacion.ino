@@ -21,7 +21,20 @@ bool estadoGenerador = true; //estado de la unidad generadora.
 bool estadoRele = false; //estado del relé. 
 bool mensajeEnviado = true; //indica si el subsistema de comunicaciones ya envió los datos presentes en el buffer.
 int estadoInstrumentacion = 0; //estado del subsistema general de instrumentación.
+
+bool B0 = true//indica si esta encendido Modulo Lora
+bool B1 = true//indica si esta inactivo Modulo Lora
+bool B2 = true//indica si esta tomando medicion Voltaje
+bool B3 = true//indica si esta tomando medicion Corriente
+bool B4 = true//indica si esta tomando medicion temperatura1
+bool B5 = true//indica si esta tomando medicion temperatura2
+bool B6 = true//indica si esta tomando medicion temperatura3
+bool mensajeEnviado = true; //indica si el subsistema de comunicaciones ya envió los datos presentes en el buffer.
+bool B9 = true//indica si el mensaje recibido es el correcto
+int estadomodulolora=0
+
 //---MÁQUINAS DE ESTADO---
+//---SUBSISTEMA INSTRUMENTACION---
 void mainInstrumentation(void) { //M1: máquina general de instrumentación, controla el estado del subsistema de medición y ordena el funcionamiento de máquinas inferiores.
     switch (estadoInstrumentacion) {
         case 0: //Estado 0: instrumentación en idle.
@@ -155,6 +168,101 @@ void actuacionRele() { //Máquina 4: actuación del relé.
     }
 
     else { //Estado 0: no hay cambios requeridos en el relé.
+        break; //no hacer nada y salir.
+    }
+}
+
+//---SUBSISTEMA COMUNICACION---
+
+void mainMaquinadeenergia(void) { //M1: máquina general de instrumentación, controla el estado del subsistema de medición y ordena el funcionamiento de máquinas inferiores.
+    switch (estadomodulolora) {
+        case 0: //Estado 0: moduloloraapagado.
+            if (B0) { //determinar si se enciende el modulo lora.
+             
+                estadomodulolora = 1; //avanzar a estado 1 que es el estado encendido
+				contador=contador+1; // contador +1
+            }
+            break; // si no se cumple, mantenerse en estado cero.
+
+        case 1: //Estado 1: moduloloraencendido.
+			if (contador<umbral && !B2 && !B3 && !B4 && !B5 && !B6) { //Si pasa el umbral y no estan tomando ningun dato
+              
+                estadomodulolora = 2; //avanzar a estado 2 que es el estado inactivo
+				contador=contador+1; // contador +1
+			}
+			if (!{contador<umbral && !B2 && !B3 && !B4 && !B5 && !B6)} { //Si no el umbral +o estan tomando algun dato
+			    estadomodulolora = 3;
+				if (mensajeEnviado){
+					recepcion(); // se ejecuta maquina de estado del recepcion
+					estadomodulolora= 1; // Pasa al estado 1 de encendido.
+            break; // si no se cumple, mantenerse en estado cero.
+
+        case 2: //Estado 2 : Idle.
+		    if (B0) { //
+                    estadomodulolora = 1; //vuelve al estado 1 de estar encendido
+				    contador=0; // contador vuelve a 0
+                }
+			if {!B0}{ // Si B0 es false 
+				estadomodulolora=0; // vuelve a estar apagado
+				}
+			if (B1){ // Si B1 es verdadero
+			    estadomodulolora=2; // se mantiene en estado 2
+			}
+        case 3: //Estado 3: Lectura de datos
+            if (mensajeEnviado){
+				recepcion(); // entra en la maquina de estado de recepcion
+			}
+			if {!mensajeEnviado}{
+				transmision(); // entra en la maquina de estado de transmision
+			}
+            break;
+
+        default: //default: no debería entrar, dejado por si algo sale mal.
+            estadomodulolora = 1; //si algo sale mal con el estado, retornar a idle.
+        break;
+    }
+
+}
+
+void transmision() { //M2: máquina de subsistema de medición eléctrica. Toma muestras del ADC y calcula voltaje y corriente RMS, para luego guardarlas en sus respectivas variables.
+
+    if(B2 || B3 || B4 || B5 || B6){
+		medicionElectrica();
+		medicionTermica();
+		estadomodulolora=3;
+		mensajeEnviado=false;
+	}
+	if (!B0){
+	    estadomodulolora=0;
+	}
+	if (mensajeEnviado){
+		estadomodulolora=4;
+	}
+	if (B8){
+		estadomoodulolora=6;
+	}
+	
+		
+
+void recepcion() { //Máquina 3: máquina de repeción 
+    if (B1) { //Si flagsB1 true
+        estadomodulolora=2; //vuelve a estadomodulolora = 2
+    }
+	if (!B0) { //Si flagsB0 negativo
+        estadomodulolora=0;//vuelve a estadomodulolora = 0
+    }
+    if (B9) { //Si flagsB9 true
+        estadomodulolora=7;//vuelve a estadomodulolora = 7
+		mensajeEnviado=false;
+		B2=0; //No se toma dato de voltaje
+		B3=0;//No se toma dato de corriente
+		B4=0;//No se toma dato de temp1
+		B5=0;//No se toma dato de temp2
+		B6=0;//No se toma dato de temp3
+
+		
+		
+    }
         break; //no hacer nada y salir.
     }
 }
