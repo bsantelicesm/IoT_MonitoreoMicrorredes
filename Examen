@@ -1,0 +1,379 @@
+#include <SPI.h>
+#include <LoRa.h>
+#include <RadioLib.h>
+#define ADC_CT 32; //pin del transformador de corriente
+#define ADC_VT 33; //pin del transformador de voltaje
+#define BUFFER_SIZE 64 //largo de buffer 64
+
+uint32_t preamble = 0xAAAA;// Variable GLOBAL que afecta a escribiendodatabuffer() y transmision() asociada al preamublo del mensaje
+uint8_t header = 0x01; //Variable GLOBAL que afecta a escribiendodatabuffer() y transmision() asociada a encabezado de 1 byte
+char payload[] = "Falla detectada"; // Variable GLOBAL que afecta a escribiendodatabuffer() y transmision() asociada a Payload , variable
+uint16_t crc = 0xFFFF; //Variable GLOBAL que afecta a escribiendodatabuffer() y transmision() asociada a CRCPayload , variable
+size_t comparador = sizeof(preamble) + sizeof (header) + strlen(payload) + sizeof(crc); // tenemos el mensaje original como punto de referencia para compararlo con el dataSize
+
+uint8_t dataBuffer[BUFFER_SIZE]; // define el largo del arreglo del dataBuffer
+uint8_t dataSize = 0; // la data comienza de 0
+int TimeOut = 0;
+
+#define TH1 12; //pin del RTD 1
+#define TH2 13; //pin del RTD 2
+#define TH3 14; //pin del RTD 3
+
+#define RELAY 4; //pin del relé
+
+//---VARIABLES---
+long time = 0; //tiempo de loop, para sincronizar lecturas una vez por minuto.
+
+float Vrms = 0; //Voltaje RMS de la última medición.
+float Irms = 0; //Corriente RMS de la última medición
+float temperatura1 = 0; //Temperatura del RTD 1 de la última medición.
+float temperatura1 = 0; //Temperatura del RTD 2 de la última medición.
+float temperatura1 = 0; //Temperatura del RTD 3 de la última medición.
+
+
+//---FLAGS---
+bool estadoGenerador = true; //estado de la unidad generadora.
+bool estadoRele = false; //estado del relé. 
+bool mensajeEnviado = true; //indica si el subsistema de comunicaciones ya envió los datos presentes en el buffer.
+int estadoInstrumentacion = 0; //estado del subsistema general de instrumentación.
+bool FlagsComeBranchcase3o4 = true // true indica que el flags proviene del estado 4 de recepcion continua y false que proviene del estado 3 de recepcion simple
+bool B0 = true//indica si esta encendido Modulo Lora
+bool B1 = true//indica si esta inactivo Modulo Lora
+bool B2 = true//indica si esta tomando medicion Voltaje
+bool B3 = true//indica si esta tomando medicion Corriente
+bool B4 = true//indica si esta tomando medicion temperatura1
+bool B5 = true//indica si esta tomando medicion temperatura2
+bool B6 = true//indica si esta tomando medicion temperatura3
+bool mensajeEnviado = true; //indica si el subsistema de comunicaciones ya envió los datos presentes en el buffer.
+bool B9 = true//indica si el mensaje recibido es el correcto
+int estadomodulolora=0
+
+//---MÁQUINAS DE ESTADO---
+//---SUBSISTEMA INSTRUMENTACION---
+void mainInstrumentation(void) { //M1: máquina general de instrumentación, controla el estado del subsistema de medición y ordena el funcionamiento de máquinas inferiores.
+    switch (estadoInstrumentacion) {
+        case 0: //Estado 0: instrumentación en idle.
+            if (millis() - time => 60000) { //determinar si han pasado 60k ms desde la última vez que se ejecutó estado 1.
+                time = millis(); //guardar tiempo para determinar próxima ejecución.
+                estadoInstrumentacion = 1; //avanzar a estado 1
+            }
+            break; // si no se cumple, mantenerse en estado cero hasta que se cumpla el tiempo.
+
+        case 1: //Estado 1: medición eléctrica.
+            medicionElectrica(); //entrar a la máquina de estado de medición eléctrica.
+            estadoInstrumentacion = 2; //avanzar a estado 2 una vez que la máquina de medición eléctrica haya completado.
+            break;
+
+        case 2: //Estado 2: medición térmica.
+            medicionTermica(); //entrar a la máquina de estado de medición térmica.
+            estadoInstrumentacion = 3; //avanzar a estado 3 una vez que la máquina de medición eléctrica haya completado.
+            break;
+
+        case 3: //Estado 3: actuación de relé
+            actuacionRele(); //entar a la máquina de estado de actuación de relé.
+            estadoInstrumentacion = 0; //bucle terminado, volvemos a estado 0 (idle)
+            break;
+
+        default: //default: no debería entrar, dejado por si algo sale mal.
+            estadoInstrumentacion = 0; //si algo sale mal con el estado, retornar a idle. si se pasó de la última medición el sistema comenzará inmediatamente.
+        break;
+    }
+
+}
+
+void medicionElectrica() { //M2: máquina de subsistema de medición eléctrica. Toma muestras del ADC y calcula voltaje y corriente RMS, para luego guardarlas en sus respectivas variables.
+
+    int Vmin = 0; //mínimo sample de voltaje detectado.
+    int Vmax = 0; //máximo sample de voltaje detectado.
+    int Imin = 0; //mínimo sample de corriente detectado.
+    int Imax = 0; //máximo sample de corriente detectado.
+    int muestras = 0; //número de muestras.
+    //Para obtener los valores RMS se obtendrán primero los valores peak-to-peak para luego dividir por raíz de tres.
+
+    while (muestras < 150) { //Estado 0. tomar 150 muestras y quedarse con la mayor y menor de cada valor.
+        tiempoMuestreo = millis();
+        Vactual = analogRead(ADC_VT); //tomar muestra de voltaje.
+        Iactual = analogRead(ADC_CT); //tomar muestra de corriente.
+
+        if (Vactual > Vmax) { //evaluar Vactual contra Vmax.
+            Vmax = Vactual; //si Vactual es mayor, es el nuevo Vmax.
+        }
+
+        if (Vactual < Vmin) { //evaluar Vactual contra Vmin.
+            Vmin = Vactual; //si Vactual es menor, es el nuevo Vmin.
+        }
+
+        if (Iactual > Imax) { //evaluar Iactual contra Imax.
+            Imax = Iactual;  // si Iactual es mayor, es el nuevo Imax.
+        }
+
+        if (Iactual < Imin) { //evaluar Iactual contra Imin.
+            Imin = Iactual //si Iactual es menor, es el nuevo Imin.
+        }
+
+        while (millis - tiempoMuestreo < 6) {//tiempo de muestreo, esperar si se demora menos de 6ms, para obtener 150 Sa/s.
+            delay(1);
+        }
+        muestras++; //subir el contador de muestras.
+    }
+
+    //Estado 1, cálculo y obtención de valores RMS.
+    float Vpk = Vmax - Vmin; //obtención de voltaje peak-to-peak.
+    float Ipk = Imax - Imin; //obtención de corriente peak-to-peak.
+
+    Vpk = ((Vpk / 4096) * 3.3) - 1.65; //pasar de valor de muestra a Volts del ADC para voltaje y remover componente DC.
+    Ipk = ((Ipk / 4096) * 3.3) - 1.65; //pasar de valor de muestra a Volts del ADC para corriente y remover componente DC.
+
+    Vpk = Vpk * 8.1411 * 18.3333; //compensación del sistema de acondicionamiento de señal para voltaje, contando divisor de voltaje y transformador respectivamente.
+    Ipk = (Ipk / 1.666) * 100; //compensación del sistema de acondicionamiento de señal para corriente, tomando el efecto del amplificador y del transformador respectivamente.
+
+    Vrms = Vpk / 1.732; //obtener valor RMS del voltaje peak-to-peak.
+    Irms = Ipk / 1.732; //obtener valor RMS de la corriente peak-to-peak y guardar a buffer.
+}
+
+void medicionTermica () {
+    int muestras = 0; //número de muestras realizadas. FLAG.
+    float v1 = 0; //mayor muestra del RTD 1.
+    float v2 = 0; //mayor muestra del RTD 2.
+    float v3 = 0; //mayor muestra del RTD 3.
+
+    while (muestras > 150) { //Estado cero: recorrer 100 muestras y quedarse con la más alta (peor de los casos).
+        tiempoMuestreo = millis();
+        vactual1 = analogRead(TH1); //tomar muestra del termistor 1.
+        vactual2 = analogRead(TH2); //tomar muestra del termistor 2.
+        vactual3 = analogRead(TH3); //tomar muestra del termistor 3.
+
+        if (v1 < vactual1) { //comparar última muestra de RTD 1 con memoria.
+            v1 = vactual1; //si vactual es mayor que memoria, es la nueva memoria
+        }
+
+        if (v2 < vactual2) { //comparar última muestra de RTD 2 con memoria.
+            v2 = vactual2; //si vactual es mayor que memoria, es la nueva memoria.
+        }
+
+        if (v3 < vactual3) { //comparar última muestra de RTD 3 con memoria.
+            v3 = vactual3; //si vactual es mayor que memoria, es la nueva memoria.
+        }
+
+        while (millis() - tiempoMuestreo < 6) { //esperar mientras el tiempo de muestreo total sea menor a 6ms para mantener 150 Sa/s.
+            delay(1); //esperar un ms si falta tiempo.
+        }
+
+        muestras++; //subir contador de muestras.
+    }
+
+    //Estado 1: obtención de temperatura de los datos obtenidos.
+    v1 = (v1 / 4096) * 3.3; //pasar muestra de RTD 1 a volts.
+    v2 = (v2 / 4096) * 3.3; //pasar muestra de RTD 2 a volts.
+    v3 = (v3 / 4096) * 3.3; //pasar muestra de RTD 3 a volts.
+
+    v1 = v1 / 0.01; //pasar voltaje a resistencia sabiendo que pasan 10mA a través del RTD 1.
+    v2 = v2 / 0.01; //pasar voltaje a resistencia sabiendo que pasan 10mA a través del RTD 2.
+    v3 = v3 / 0.01; //pasar voltaje a resistencia sabiendo que pasan 10mA a través del RTD 3.
+
+    temperatura1 = ((v1/100) - 1) / 0.00385; //pasar de ohms a grados celsius usando versión simplificada de la fórmula.
+    temperatura2 = ((v2/100) - 1) / 0.00385; //pasar de ohms a grados celsius usando versión simplificada de la fórmula.
+    temperatura3 = ((v3/100) - 1) / 0.00385; //pasar de ohms a grados celsius usando versión simplificada de la fórmula.
+}
+
+void actuacionRele() { //Máquina 4: actuación del relé.
+    if (estadoGenerador != estadoRele) { //Estado 1: el estado del relé es distinto al estado deseado del generador.
+        digitalWrite(RELAY, estadoGenerador); //cambiar estado del relé al estado deseado.
+        estadoRele = estadoGenerador; //guardar estado actual del relé.
+    }
+
+    else { //Estado 0: no hay cambios requeridos en el relé.
+        break; //no hacer nada y salir.
+    }
+}
+
+//---SUBSISTEMA COMUNICACION---
+
+void mainMaquinadecomunicacion(void) { //M1: máquina general de comunicacion, controla el estado del subsistema de escribiendo buffer,transmision,recepcion simple, recepcion continua, leyendo data buffer
+    switch (estadomodulolora) {
+        case 0: //Estado 0: Standby
+            int dataSize = 0; // seteamos el dataSize en 0 que nos sirve en transmision y recepcion
+			estadomodulolora=1;
+			
+            break; // si no se cumple, mantenerse en estado cero.
+
+        case 1: // Estado 1: Escribiendo en data buffer FIFO
+		    escribiendodatabuffer(); // llama a la maquina de estado escribiendodatabuffer()
+			if (dataSize <= comparador) { //compara si se terminó de escribir el mensaje en el buffer
+                                                                 //if (FIFOaddPRT < RegisterPayLength) { // Si puntero FIFOaddPRT es menor que RegisterPayLength implica que sigue escribiendo en el Buffer
+                estadomodulolora = 1; // se mantiene en Estado 1
+            }
+			else{ 
+			                                                     //if (FIFOaddPRT == RegisterPayLength) { //Si puntero FIFOaddPRT es igual que RegisterPayLength implica que ya escribió el total del frame
+                estadomodulolora = 2; //avanzar a Estado 2 que es el de transmision
+			}
+            break;
+			                        //if (!{contador<umbral && !B2 && !B3 && !B4 && !B5 && !B6)} { //Si no el umbral +o estan tomando algun dato
+			                        // estadomodulolora = 3;
+				                      //if (mensajeEnviado){
+					                    //recepcion(); // se ejecuta maquina de estado del recepcion
+					                    //estadomodulolora= 1; // Pasa al estado 1 de encendido.
+                              //break; // si no se cumple, mantenerse en estado cero.
+
+        case 2: //Estado 2 : Transmisión
+		    transmision();
+            if (millis() => 144000000){ // Tiempo que simula tener bateria baja calculado de, Supongamos que se utiliza batería con capacidad de 2000 mAh y la corriente consumida en el modo activoes de 50 mA. El tiempo de actividad se calcula dividiendo la capacidad de las baterías por la corriente consumida: Tiempo de actividad = 2000 mAh / 50 mA = 40 horas
+                estadomodulolora=3;
+            }
+            else { // Tiempo que si no tener bateria baja
+                estadomodulolora=4; //la mayor parte del tiempo está en estado recepcion continua
+            }
+            break;
+     
+        case 3: //Estado 3: Recepción Simple
+                           //if (TxDone == True)
+			recepcionsimple(); // entra en la maquina de estado de recepcion simple
+		    if (TimeOut > 204 * 1.024 || !PayCRCerror) // 1023 simbolos equivalen a 204 bytes y cada bytes tiene un tiempo de 1.024 ms, la cantidad de simbolos se relaciona con el tiempo de espera. O si PayCRCerror es false es decir, hay error en los datos. o PayCRCerror es falso
+			                 //RxDone == false
+			    estadomodulolora=0; vuelve al estado Standby
+			else {
+				//RxDone == true
+			    estadomodulolora=5; // pasa al estado de lectura del datta Buffer
+			}
+            break;
+		case 4: //Estado 4: Recepcion Continua
+		    recepcioncontinua();
+			RxDone == true;
+			if (millis()=> 144000000){ // Tiempo que simula tener bateria baja calculado de, Supongamos que se utiliza batería con capacidad de 2000 mAh y la corriente consumida en el modo activoes de 50 mA. El tiempo de actividad se calcula dividiendo la capacidad de las baterías por la corriente consumida: Tiempo de actividad = 2000 mAh / 50 mA = 40 horas
+                estadomodulolora=0; // vuelve al estado Standby 
+			if (PayCRCerror){ // si PayCRCerror es true
+				                                                                            //FIFOaddPRT = RegisterCurrentAdd // el puntero de lectura se fija en el ultimo frame introducido por el modem
+				estadomodulolora = 5; //pasa al estado de lectura del datta Buffer
+			}
+			estadomodulolora = 4 // se mantiene constantemente en el estado 4
+			}
+            break;
+        case 5: // Estado 5: Leyendo en data buffer FIFO
+		    leyendodatabuffer(); // entra a la maquina de estado de lectura de data buffer
+		    if (FlagsComeBranchcase3o4){ //con esto seleccionamos si proviene del estado de recepcionsimple
+            	estadomodulolora = 0; //vuelve al estado Standby
+			}
+            if (!FlagsComeBranchcase3o4){ // con esto seleccionamos si proviene del estado de recepcioncontinua
+				estadomodulolora = 4; // vuelve al estado 4
+            }
+            break;
+									  
+									  			
+    }
+
+}
+
+void uint16_t crc16(const uint8_t *data, size_t length) { //Verifica el CRC del frame
+    uint16_t crc = 0xFFFF;
+
+    for (size_t i = 0; i < length; i++) {
+        crc ^= data[i];
+        for (size_t j = 0; j < 8; j++) {
+            if (crc & 0x0001) {
+                crc = (crc >> 1) ^ 0xA001;
+            }
+		    else {
+                crc = crc >> 1;
+            }
+        }
+    }
+}
+
+  return crc;
+}
+void processFrame(uint8_t *data, uint8_t size) {
+    if (size >= 6) {  // verificaa si el tamaño del frame es válido
+        uint32_t preamble;
+        memcpy(&preamble, data, sizeof(preamble));// leer el preambulo de 4 bytes
+        data += sizeof(preamble); // Avanzar el puntero de lectura
+        uint8_t header = *data; // Leer el encabezado (1 byte)
+        data++; // Avanzar el puntero de lectura
+        uint8_t payloadSize = size - 6;  //// Leer el payload,  Tamaño total - preambulo de 4 bytes - encabezado de 1 byte - CRC de 1 byte
+        char payload[payloadSize + 1];
+        memcpy(payload, data, payloadSize);
+        data += payloadSize; // Avanzar el puntero de lectura al CRC
+        uint16_t crc;
+        memcpy(&crc, data, sizeof(crc)); // Leer el CRC de 2 bytes
+
+void escribiendodatabuffer() { //Maquina de estado para escribir en el data buffer
+    uint32_t preamble = 0xAAAA;;// preambulo de 4 bytes
+    uint8_t header = 0x01; //encabezado de 1 byte
+    char payload[] = "Falla detectada"; // Payload , variable
+    uint16_t crc = crc16(payload, strlen(payload)); // calcula y agregar el CRC al payload
+    uint8_t crcBytes[] = {
+        (uint8_t)(crc >> 8),
+	    (uint8_t)(crc & 0xFF)
+	}
+	
+    dataSize = 0; // Comienzo de escribir los datos en el bufer
+    memcpy(dataBuffer + dataSize, &preamble, sizeof(preamble)); //memcpy hace una escritura desde la memoria variable hacia data buffer, comienza desde 0 y escribe la dirección del preambulo y el tamaño de la variable del preamublo que es 4 bytes
+    dataSize += sizeof(preamble); // se suma al puntero dataSize para saber en que parte del Buffer se encuentra y siga escribiendo el frame
+    dataBuffer[dataSize++] = header; // escribe y posiciona el header en bits del databuffer
+    memcpy(dataBuffer + dataSize, payload, payloadSize); //escribe el payload y el largo del payload en el data buffer
+    dataSize += payloadSize; // vuelve a cambiar el puntero dentro del buffer
+    memcpy(dataBuffer + dataSize, crcBytes, sizeof(crcBytes)); //escribe el CRCBytes y su largo dentro del buffer
+    dataSize += sizeof(crcBytes);
+	
+}
+
+void transmision() { //Maquina de estado para la transmision
+    LoRa.beginPacket(); //Comienzo de la transmision
+    LoRa.write(header); 
+    LoRa.write(payload, strlen(payload)); 
+    LoRa.write(crcBytes, sizeof(crcBytes));  //se escribe el encabezado, el payload y el CRC en el paquete utilizando
+    LoRa.endPacket();
+	
+}
+  ;
+		
+
+void recepcionsimple() { //Máquina 3: máquina de repeción simple
+    unsigned long startTime = millis();  // Tiempo inicial
+    if (radio.receive()) {  // Verifica si se ha recibido un frame de datos
+        uint8_t payloadSize = radio.getPacketLength();// obtiene el tamaño del payload de datos recibidos
+        uint8_t payload[payloadSize]; // crea un buffer para almacenar el payload
+        radio.getPacket(payload, payloadSize); // lee el payload de datos recibidos 
+        if (radio.crcCheck()) { // Verifica el CRC del frame recibido
+		PayCRCerror == true; // me indica una bandera que el PayCRC es valido
+		}
+		
+		else {
+			PayCRCerror == false;
+	    }
+	else{
+	    RxDone == false
+	}
+	 unsigned long endTime = millis();  // Tiempo final
+	 unsigned long TimeOut = endTime-startTime; // Tomar muestra del tiempo que toma el tiempo de recepcion.
+	 FlagsComeBranchcase3o4 == false;
+}
+void recepcioncontinua(){ //Maquina 4: recepcion continia
+unsigned long startTime = millis();  // Tiempo inicial
+    while (radio.receive()) {  // Verifica constantemente si se ha recibido un frame de datos
+        uint8_t payloadSize = radio.getPacketLength();// obtiene el tamaño del payload de datos recibidos
+        uint8_t payload[payloadSize]; // crea un buffer para almacenar el payload
+        radio.getPacket(payload, payloadSize); // lee el payload de datos recibidos 
+        if (radio.crcCheck()) { // Verifica el CRC del frame recibido
+		PayCRCerror == true; // me indica una bandera que el PayCRC es valido
+		}
+		
+		else {
+			PayCRCerror == false;
+	    }
+	}
+	 unsigned long endTime = millis();  // Tiempo final
+	 unsigned long TimeOut = endTime-startTime; // Tomar muestra del tiempo que toma el tiempo de recepcion.
+	 FlagsComeBranchcase3o4 == true;
+	 
+
+}
+void leyendodatabuffer(){
+    if (LoRa.parsePacket()) {   // se espera a recibir un paquete
+        dataSize = LoRa.readBytes(dataBuffer, BUFFER_SIZE); // leer el paquete en el buffer de datos
+        processFrame(dataBuffer, dataSize);Procesar el frame recibido
+    }
+}
+
+
+	
+}
