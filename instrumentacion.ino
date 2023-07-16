@@ -1,5 +1,19 @@
+#include <SPI.h>
+#include <LoRa.h>
+#include <RadioLib.h>
 #define ADC_CT 32; //pin del transformador de corriente
 #define ADC_VT 33; //pin del transformador de voltaje
+#define BUFFER_SIZE 64 //largo de buffer 64
+
+uint32_t preamble = 0xAAAA;// Variable GLOBAL que afecta a escribiendodatabuffer() y transmision() asociada al preamublo del mensaje
+uint8_t header = 0x01; //Variable GLOBAL que afecta a escribiendodatabuffer() y transmision() asociada a encabezado de 1 byte
+char payload[] = "Falla detectada"; // Variable GLOBAL que afecta a escribiendodatabuffer() y transmision() asociada a Payload , variable
+uint16_t crc = 0xFFFF; //Variable GLOBAL que afecta a escribiendodatabuffer() y transmision() asociada a CRCPayload , variable
+size_t comparador = sizeof(preamble) + sizeof (header) + strlen(payload) + sizeof(crc); // tenemos el mensaje original como punto de referencia para compararlo con el dataSize
+
+uint8_t dataBuffer[BUFFER_SIZE]; // define el largo del arreglo del dataBuffer
+uint8_t dataSize = 0; // la data comienza de 0
+int TimeOut = 0;
 
 #define TH1 12; //pin del RTD 1
 #define TH2 13; //pin del RTD 2
@@ -16,12 +30,13 @@ float temperatura1 = 0; //Temperatura del RTD 1 de la última medición.
 float temperatura1 = 0; //Temperatura del RTD 2 de la última medición.
 float temperatura1 = 0; //Temperatura del RTD 3 de la última medición.
 
+
 //---FLAGS---
 bool estadoGenerador = true; //estado de la unidad generadora.
 bool estadoRele = false; //estado del relé. 
 bool mensajeEnviado = true; //indica si el subsistema de comunicaciones ya envió los datos presentes en el buffer.
 int estadoInstrumentacion = 0; //estado del subsistema general de instrumentación.
-
+bool FlagsComeBranchcase3o4 = true // true indica que el flags proviene del estado 4 de recepcion continua y false que proviene del estado 3 de recepcion simple
 bool B0 = true//indica si esta encendido Modulo Lora
 bool B1 = true//indica si esta inactivo Modulo Lora
 bool B2 = true//indica si esta tomando medicion Voltaje
@@ -174,95 +189,191 @@ void actuacionRele() { //Máquina 4: actuación del relé.
 
 //---SUBSISTEMA COMUNICACION---
 
-void mainMaquinadeenergia(void) { //M1: máquina general de instrumentación, controla el estado del subsistema de medición y ordena el funcionamiento de máquinas inferiores.
+void mainMaquinadecomunicacion(void) { //M1: máquina general de comunicacion, controla el estado del subsistema de escribiendo buffer,transmision,recepcion simple, recepcion continua, leyendo data buffer
     switch (estadomodulolora) {
-        case 0: //Estado 0: moduloloraapagado.
-            if (B0) { //determinar si se enciende el modulo lora.
-             
-                estadomodulolora = 1; //avanzar a estado 1 que es el estado encendido
-				contador=contador+1; // contador +1
+        case 0: //Estado 0: Standby
+            int dataSize = 0; // seteamos el dataSize en 0 que nos sirve en transmision y recepcion
+			estadomodulolora=1;
+			
+            break; // si no se cumple, mantenerse en estado cero.
+
+        case 1: // Estado 1: Escribiendo en data buffer FIFO
+		    escribiendodatabuffer(); // llama a la maquina de estado escribiendodatabuffer()
+			if (dataSize <= comparador) { //compara si se terminó de escribir el mensaje en el buffer
+                                                                 //if (FIFOaddPRT < RegisterPayLength) { // Si puntero FIFOaddPRT es menor que RegisterPayLength implica que sigue escribiendo en el Buffer
+                estadomodulolora = 1; // se mantiene en Estado 1
             }
-            break; // si no se cumple, mantenerse en estado cero.
-
-        case 1: //Estado 1: moduloloraencendido.
-			if (contador<umbral && !B2 && !B3 && !B4 && !B5 && !B6) { //Si pasa el umbral y no estan tomando ningun dato
-              
-                estadomodulolora = 2; //avanzar a estado 2 que es el estado inactivo
-				contador=contador+1; // contador +1
-			}
-			if (!{contador<umbral && !B2 && !B3 && !B4 && !B5 && !B6)} { //Si no el umbral +o estan tomando algun dato
-			    estadomodulolora = 3;
-				if (mensajeEnviado){
-					recepcion(); // se ejecuta maquina de estado del recepcion
-					estadomodulolora= 1; // Pasa al estado 1 de encendido.
-            break; // si no se cumple, mantenerse en estado cero.
-
-        case 2: //Estado 2 : Idle.
-		    if (B0) { //
-                    estadomodulolora = 1; //vuelve al estado 1 de estar encendido
-				    contador=0; // contador vuelve a 0
-                }
-			if {!B0}{ // Si B0 es false 
-				estadomodulolora=0; // vuelve a estar apagado
-				}
-			if (B1){ // Si B1 es verdadero
-			    estadomodulolora=2; // se mantiene en estado 2
-			}
-        case 3: //Estado 3: Lectura de datos
-            if (mensajeEnviado){
-				recepcion(); // entra en la maquina de estado de recepcion
-			}
-			if {!mensajeEnviado}{
-				transmision(); // entra en la maquina de estado de transmision
+			else{ 
+			                                                     //if (FIFOaddPRT == RegisterPayLength) { //Si puntero FIFOaddPRT es igual que RegisterPayLength implica que ya escribió el total del frame
+                estadomodulolora = 2; //avanzar a Estado 2 que es el de transmision
 			}
             break;
+			                        //if (!{contador<umbral && !B2 && !B3 && !B4 && !B5 && !B6)} { //Si no el umbral +o estan tomando algun dato
+			                        // estadomodulolora = 3;
+				                      //if (mensajeEnviado){
+					                    //recepcion(); // se ejecuta maquina de estado del recepcion
+					                    //estadomodulolora= 1; // Pasa al estado 1 de encendido.
+                              //break; // si no se cumple, mantenerse en estado cero.
 
-        default: //default: no debería entrar, dejado por si algo sale mal.
-            estadomodulolora = 1; //si algo sale mal con el estado, retornar a idle.
-        break;
+        case 2: //Estado 2 : Transmisión
+		    transmision();
+            if (millis() => 144000000){ // Tiempo que simula tener bateria baja calculado de, Supongamos que se utiliza batería con capacidad de 2000 mAh y la corriente consumida en el modo activoes de 50 mA. El tiempo de actividad se calcula dividiendo la capacidad de las baterías por la corriente consumida: Tiempo de actividad = 2000 mAh / 50 mA = 40 horas
+                estadomodulolora=3;
+            }
+            else { // Tiempo que si no tener bateria baja
+                estadomodulolora=4; //la mayor parte del tiempo está en estado recepcion continua
+            }
+            break;
+     
+        case 3: //Estado 3: Recepción Simple
+                           //if (TxDone == True)
+			recepcionsimple(); // entra en la maquina de estado de recepcion simple
+		    if (TimeOut > 204 * 1.024 || !PayCRCerror) // 1023 simbolos equivalen a 204 bytes y cada bytes tiene un tiempo de 1.024 ms, la cantidad de simbolos se relaciona con el tiempo de espera. O si PayCRCerror es false es decir, hay error en los datos. o PayCRCerror es falso
+			                 //RxDone == false
+			    estadomodulolora=0; vuelve al estado Standby
+			else {
+				//RxDone == true
+			    estadomodulolora=5; // pasa al estado de lectura del datta Buffer
+			}
+            break;
+		case 4: //Estado 4: Recepcion Continua
+		    recepcioncontinua();
+			RxDone == true;
+			if (millis()=> 144000000){ // Tiempo que simula tener bateria baja calculado de, Supongamos que se utiliza batería con capacidad de 2000 mAh y la corriente consumida en el modo activoes de 50 mA. El tiempo de actividad se calcula dividiendo la capacidad de las baterías por la corriente consumida: Tiempo de actividad = 2000 mAh / 50 mA = 40 horas
+                estadomodulolora=0; // vuelve al estado Standby 
+			if (PayCRCerror){ // si PayCRCerror es true
+				                                                                            //FIFOaddPRT = RegisterCurrentAdd // el puntero de lectura se fija en el ultimo frame introducido por el modem
+				estadomodulolora = 5; //pasa al estado de lectura del datta Buffer
+			}
+			estadomodulolora = 4 // se mantiene constantemente en el estado 4
+			}
+            break;
+        case 5: // Estado 5: Leyendo en data buffer FIFO
+		    leyendodatabuffer(); // entra a la maquina de estado de lectura de data buffer
+		    if (FlagsComeBranchcase3o4){ //con esto seleccionamos si proviene del estado de recepcionsimple
+            	estadomodulolora = 0; //vuelve al estado Standby
+			}
+            if (!FlagsComeBranchcase3o4){ // con esto seleccionamos si proviene del estado de recepcioncontinua
+				estadomodulolora = 4; // vuelve al estado 4
+            }
+            break;
+									  
+									  			
     }
 
 }
 
-void transmision() { //M2: máquina de subsistema de medición eléctrica. Toma muestras del ADC y calcula voltaje y corriente RMS, para luego guardarlas en sus respectivas variables.
+void uint16_t crc16(const uint8_t *data, size_t length) { //Verifica el CRC del frame
+    uint16_t crc = 0xFFFF;
 
-    if(B2 || B3 || B4 || B5 || B6){
-		medicionElectrica();
-		medicionTermica();
-		estadomodulolora=3;
-		mensajeEnviado=false;
-	}
-	if (!B0){
-	    estadomodulolora=0;
-	}
-	if (mensajeEnviado){
-		estadomodulolora=4;
-	}
-	if (B8){
-		estadomoodulolora=6;
+    for (size_t i = 0; i < length; i++) {
+        crc ^= data[i];
+        for (size_t j = 0; j < 8; j++) {
+            if (crc & 0x0001) {
+                crc = (crc >> 1) ^ 0xA001;
+            }
+		    else {
+                crc = crc >> 1;
+            }
+        }
+    }
+}
+
+  return crc;
+}
+void processFrame(uint8_t *data, uint8_t size) {
+    if (size >= 6) {  // verificaa si el tamaño del frame es válido
+        uint32_t preamble;
+        memcpy(&preamble, data, sizeof(preamble));// leer el preambulo de 4 bytes
+        data += sizeof(preamble); // Avanzar el puntero de lectura
+        uint8_t header = *data; // Leer el encabezado (1 byte)
+        data++; // Avanzar el puntero de lectura
+        uint8_t payloadSize = size - 6;  //// Leer el payload,  Tamaño total - preambulo de 4 bytes - encabezado de 1 byte - CRC de 1 byte
+        char payload[payloadSize + 1];
+        memcpy(payload, data, payloadSize);
+        data += payloadSize; // Avanzar el puntero de lectura al CRC
+        uint16_t crc;
+        memcpy(&crc, data, sizeof(crc)); // Leer el CRC de 2 bytes
+
+void escribiendodatabuffer() { //Maquina de estado para escribir en el data buffer
+    uint32_t preamble = 0xAAAA;;// preambulo de 4 bytes
+    uint8_t header = 0x01; //encabezado de 1 byte
+    char payload[] = "Falla detectada"; // Payload , variable
+    uint16_t crc = crc16(payload, strlen(payload)); // calcula y agregar el CRC al payload
+    uint8_t crcBytes[] = {
+        (uint8_t)(crc >> 8),
+	    (uint8_t)(crc & 0xFF)
 	}
 	
+    dataSize = 0; // Comienzo de escribir los datos en el bufer
+    memcpy(dataBuffer + dataSize, &preamble, sizeof(preamble)); //memcpy hace una escritura desde la memoria variable hacia data buffer, comienza desde 0 y escribe la dirección del preambulo y el tamaño de la variable del preamublo que es 4 bytes
+    dataSize += sizeof(preamble); // se suma al puntero dataSize para saber en que parte del Buffer se encuentra y siga escribiendo el frame
+    dataBuffer[dataSize++] = header; // escribe y posiciona el header en bits del databuffer
+    memcpy(dataBuffer + dataSize, payload, payloadSize); //escribe el payload y el largo del payload en el data buffer
+    dataSize += payloadSize; // vuelve a cambiar el puntero dentro del buffer
+    memcpy(dataBuffer + dataSize, crcBytes, sizeof(crcBytes)); //escribe el CRCBytes y su largo dentro del buffer
+    dataSize += sizeof(crcBytes);
+	
+}
+
+void transmision() { //Maquina de estado para la transmision
+    LoRa.beginPacket(); //Comienzo de la transmision
+    LoRa.write(header); 
+    LoRa.write(payload, strlen(payload)); 
+    LoRa.write(crcBytes, sizeof(crcBytes));  //se escribe el encabezado, el payload y el CRC en el paquete utilizando
+    LoRa.endPacket();
+	
+}
+  ;
 		
 
-void recepcion() { //Máquina 3: máquina de repeción 
-    if (B1) { //Si flagsB1 true
-        estadomodulolora=2; //vuelve a estadomodulolora = 2
-    }
-	if (!B0) { //Si flagsB0 negativo
-        estadomodulolora=0;//vuelve a estadomodulolora = 0
-    }
-    if (B9) { //Si flagsB9 true
-        estadomodulolora=7;//vuelve a estadomodulolora = 7
-		mensajeEnviado=false;
-		B2=0; //No se toma dato de voltaje
-		B3=0;//No se toma dato de corriente
-		B4=0;//No se toma dato de temp1
-		B5=0;//No se toma dato de temp2
-		B6=0;//No se toma dato de temp3
+void recepcionsimple() { //Máquina 3: máquina de repeción simple
+    unsigned long startTime = millis();  // Tiempo inicial
+    if (radio.receive()) {  // Verifica si se ha recibido un frame de datos
+        uint8_t payloadSize = radio.getPacketLength();// obtiene el tamaño del payload de datos recibidos
+        uint8_t payload[payloadSize]; // crea un buffer para almacenar el payload
+        radio.getPacket(payload, payloadSize); // lee el payload de datos recibidos 
+        if (radio.crcCheck()) { // Verifica el CRC del frame recibido
+		PayCRCerror == true; // me indica una bandera que el PayCRC es valido
+		}
+		
+		else {
+			PayCRCerror == false;
+	    }
+	else{
+	    RxDone == false
+	}
+	 unsigned long endTime = millis();  // Tiempo final
+	 unsigned long TimeOut = endTime-startTime; // Tomar muestra del tiempo que toma el tiempo de recepcion.
+	 FlagsComeBranchcase3o4 == false;
+}
+void recepcioncontinua(){ //Maquina 4: recepcion continia
+unsigned long startTime = millis();  // Tiempo inicial
+    while (radio.receive()) {  // Verifica constantemente si se ha recibido un frame de datos
+        uint8_t payloadSize = radio.getPacketLength();// obtiene el tamaño del payload de datos recibidos
+        uint8_t payload[payloadSize]; // crea un buffer para almacenar el payload
+        radio.getPacket(payload, payloadSize); // lee el payload de datos recibidos 
+        if (radio.crcCheck()) { // Verifica el CRC del frame recibido
+		PayCRCerror == true; // me indica una bandera que el PayCRC es valido
+		}
+		
+		else {
+			PayCRCerror == false;
+	    }
+	}
+	 unsigned long endTime = millis();  // Tiempo final
+	 unsigned long TimeOut = endTime-startTime; // Tomar muestra del tiempo que toma el tiempo de recepcion.
+	 FlagsComeBranchcase3o4 == true;
+	 
 
-		
-		
+}
+void leyendodatabuffer(){
+    if (LoRa.parsePacket()) {   // se espera a recibir un paquete
+        dataSize = LoRa.readBytes(dataBuffer, BUFFER_SIZE); // leer el paquete en el buffer de datos
+        processFrame(dataBuffer, dataSize);Procesar el frame recibido
     }
-        break; //no hacer nada y salir.
-    }
+}
+
+
+	
 }
